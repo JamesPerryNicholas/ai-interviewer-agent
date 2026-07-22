@@ -1,0 +1,74 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+
+<defs>
+  <linearGradient id="bluePurple" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0%" stop-color="#0B2A72"/>
+    <stop offset="55%" stop-color="#2563EB"/>
+    <stop offset="100%" stop-color="#8B5CF6"/>
+  </linearGradient>
+</defs>
+
+<!-- Background -->
+<rect width="1024" height="1024" rx="120" fill="white"/>
+
+
+<!-- AI Logo -->
+<g>
+
+<!-- A -->
+<path d="M210 470L330 210C350 165 410 165 430 210L560 470H455L425 400H310L280 470H210ZM345 325H390L368 270L345 325Z"
+fill="url(#bluePurple)"/>
+
+
+<!-- i -->
+<path d="M560 280C560 240 590 210 630 210C670 210 700 240 700 280C700 320 670 350 630 350C590 350 560 320 560 280Z"
+fill="url(#bluePurple)"/>
+
+<rect x="585" y="360" width="90" height="190" rx="45"
+fill="#132B70"/>
+
+
+<!-- Speech Bubble -->
+<path d="M700 230C820 230 880 290 880 380C880 470 820 520 730 520H680L620 570V480"
+stroke="url(#bluePurple)"
+stroke-width="35"
+fill="none"
+stroke-linecap="round"/>
+
+<circle cx="750" cy="380" r="14" fill="#2563EB"/>
+<circle cx="800" cy="380" r="14" fill="#2563EB"/>
+<circle cx="850" cy="380" r="14" fill="#2563EB"/>
+
+
+<!-- Curve -->
+<path d="M250 560C420 650 680 650 850 560"
+stroke="url(#bluePurple)"
+stroke-width="18"
+fill="none"
+stroke-linecap="round"/>
+
+</g>
+
+
+<!-- Text -->
+<text x="512" y="720"
+text-anchor="middle"
+font-family="Arial, Helvetica, sans-serif"
+font-size="95"
+font-weight="700"
+fill="#101936">
+AI Interviewly
+</text>
+
+
+<text x="512" y="820"
+text-anchor="middle"
+font-family="Arial, Helvetica, sans-serif"
+font-size="55"
+letter-spacing="18"
+fill="#4169E1">
+agent
+</text>
+
+
+</svg>
