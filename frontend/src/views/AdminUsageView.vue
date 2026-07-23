@@ -26,8 +26,10 @@ const budgetPercent = computed(() => {
 const featureLabels: Record<string, string> = {
   resume_analysis: "简历分析",
   resume_localization: "简历本地化",
-  question_generation: "面试题生成",
+  question_generation: "参考面试题生成",
+  simulation_question_generation: "模拟面试题生成",
   interview_chat: "模拟面试",
+  interview_answer_review: "回答分析",
   interview_evaluation: "面试评分",
 };
 

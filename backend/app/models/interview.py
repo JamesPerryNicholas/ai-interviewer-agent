@@ -1,9 +1,9 @@
 """Interview session persistence model."""
 
 from datetime import datetime
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, func
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -22,6 +22,9 @@ class Interview(Base):
     """A user's AI interview session for one resume and job position."""
 
     __tablename__ = "interviews"
+    __table_args__ = (
+        UniqueConstraint("user_id", "start_request_id", name="uq_interviews_user_start_request"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(
@@ -36,6 +39,7 @@ class Interview(Base):
     status: Mapped[str] = mapped_column(
         String(30), nullable=False, server_default="in_progress", index=True
     )
+    start_request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     completed_questions: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="0"
     )

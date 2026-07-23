@@ -1,4 +1,5 @@
 import request, { TOKEN_KEY } from "./request";
+import { API_BASE_URL, createRequestId } from "./base";
 import type {
   InterviewFinishResponse,
   InterviewHistoryResponse,
@@ -6,19 +7,22 @@ import type {
   InterviewStartResponse,
 } from "../types";
 
-const API_BASE_URL = "http://localhost:8000";
-
 export async function startInterview(resumeId: number, jobId: number): Promise<InterviewStartResponse> {
   // Starting a session generates a fresh set of eight questions through the
   // LLM, so it must not use the shared 10-second request timeout.
+  const pendingKey = `pending-interview-start:${resumeId}:${jobId}`;
+  const requestId = sessionStorage.getItem(pendingKey) || createRequestId();
+  sessionStorage.setItem(pendingKey, requestId);
   const response = await request.post<InterviewStartResponse>(
     "/api/interview/start",
     {
       resume_id: resumeId,
       job_id: jobId,
+      request_id: requestId,
     },
-    { timeout: 180_000 },
+    { timeout: 90_000 },
   );
+  sessionStorage.removeItem(pendingKey);
   return response.data;
 }
 
@@ -69,13 +73,29 @@ export async function streamInterview(
   onToken: (content: string) => void,
 ): Promise<void> {
   const token = localStorage.getItem(TOKEN_KEY);
+  const pendingKey = `pending-interview-message:${interviewId}`;
+  const pending = sessionStorage.getItem(pendingKey);
+  let requestId = createRequestId();
+  if (pending) {
+    try {
+      const parsed = JSON.parse(pending) as { message?: string; requestId?: string };
+      if (parsed.message === message && parsed.requestId) requestId = parsed.requestId;
+    } catch {
+      // Replace malformed local retry state below.
+    }
+  }
+  sessionStorage.setItem(pendingKey, JSON.stringify({ message, requestId }));
   const response = await fetch(`${API_BASE_URL}/api/interview/stream`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
-    body: JSON.stringify({ interview_id: interviewId, message }),
+    body: JSON.stringify({
+      interview_id: interviewId,
+      message,
+      request_id: requestId,
+    }),
   });
 
   if (!response.ok) {
@@ -125,4 +145,5 @@ export async function streamInterview(
       break;
     }
   }
+  if (streamFinished) sessionStorage.removeItem(pendingKey);
 }

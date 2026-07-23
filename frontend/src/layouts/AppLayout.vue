@@ -16,6 +16,7 @@ import { useRoute, useRouter } from "vue-router";
 
 import { localeOptions, setLocale, type SupportedLocale } from "../i18n";
 import { useUserStore } from "../stores/user";
+import { apiUrl } from "../api/base";
 
 const route = useRoute();
 const router = useRouter();
@@ -30,7 +31,7 @@ const pageTitle = computed(() => {
 });
 const profileName = computed(() => userStore.user?.display_name || userStore.user?.username || "Candidate");
 const profileStatus = computed(() => userStore.user?.career_status || t("nav.candidate"));
-const avatarUrl = computed(() => userStore.user?.avatar_url ? `http://localhost:8000${userStore.user.avatar_url}` : "");
+const avatarUrl = computed(() => apiUrl(userStore.user?.avatar_url));
 
 function handleMenuSelect(path: string) {
   router.push(path);
@@ -40,9 +41,9 @@ function changeLanguage(value: SupportedLocale) {
   setLocale(value);
 }
 
-function logout() {
-  userStore.logout();
-  router.push("/login");
+async function logout() {
+  await userStore.logout();
+  await router.push("/login");
 }
 </script>
 

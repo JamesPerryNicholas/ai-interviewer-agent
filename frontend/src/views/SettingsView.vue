@@ -7,6 +7,7 @@ import { ElMessage } from "element-plus";
 import { changePassword, getLoginRecords } from "../api/user";
 import { applyTheme, getThemeMode, type ThemeMode } from "../theme";
 import type { LoginRecord } from "../types";
+import { useUserStore } from "../stores/user";
 
 const currentPassword = ref("");
 const newPassword = ref("");
@@ -15,6 +16,7 @@ const changingPassword = ref(false);
 const themeMode = ref<ThemeMode>(getThemeMode());
 const loginRecords = ref<LoginRecord[]>([]);
 const loadingRecords = ref(false);
+const userStore = useUserStore();
 
 const themeOptions: Array<{ value: ThemeMode; title: string; description: string; icon: typeof Brush }> = [
   { value: "light", title: "亮色", description: "适合白天使用", icon: Brush },
@@ -38,6 +40,18 @@ async function submitPassword() {
     ElMessage.warning("新密码至少需要 8 位");
     return;
   }
+  if (!/[a-z]/.test(newPassword.value)) {
+    ElMessage.warning("新密码必须包含至少一个小写字母");
+    return;
+  }
+  if (!/[A-Z]/.test(newPassword.value)) {
+    ElMessage.warning("新密码必须包含至少一个大写字母");
+    return;
+  }
+  if (!/\d/.test(newPassword.value)) {
+    ElMessage.warning("新密码必须包含至少一个数字");
+    return;
+  }
   if (newPassword.value !== confirmPassword.value) {
     ElMessage.warning("两次输入的新密码不一致");
     return;
@@ -45,11 +59,12 @@ async function submitPassword() {
 
   changingPassword.value = true;
   try {
-    await changePassword(currentPassword.value, newPassword.value);
+    const result = await changePassword(currentPassword.value, newPassword.value);
+    userStore.setToken(result.access_token);
     currentPassword.value = "";
     newPassword.value = "";
     confirmPassword.value = "";
-    ElMessage.success("密码修改成功");
+    ElMessage.success("密码修改成功，当前设备将保持登录");
   } catch (error) {
     ElMessage.error(axios.isAxiosError(error) ? error.message : "密码修改失败，请稍后重试");
   } finally {
@@ -110,11 +125,21 @@ onMounted(loadLoginRecords);
           </el-form-item>
           <el-form-item label="新密码">
             <el-input v-model="newPassword" type="password" show-password size="large" placeholder="至少 8 位字符" autocomplete="new-password"><template #prefix><el-icon><Key /></el-icon></template></el-input>
+            <small class="password-requirement">至少 8 位，并同时包含数字、大写字母和小写字母</small>
           </el-form-item>
           <el-form-item label="确认新密码">
             <el-input v-model="confirmPassword" type="password" show-password size="large" placeholder="再次输入新密码" autocomplete="new-password"><template #prefix><el-icon><Check /></el-icon></template></el-input>
           </el-form-item>
-          <el-button class="settings-primary-button" native-type="submit" type="primary" size="large" :loading="changingPassword">保存新密码</el-button>
+          <el-button
+            class="settings-primary-button"
+            native-type="submit"
+            type="primary"
+            size="large"
+            :disabled="changingPassword"
+            :aria-busy="changingPassword"
+          >
+            {{ changingPassword ? "正在保存…" : "保存新密码" }}
+          </el-button>
         </el-form>
       </el-card>
 

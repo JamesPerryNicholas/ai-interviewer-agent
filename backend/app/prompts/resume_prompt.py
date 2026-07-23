@@ -2,7 +2,6 @@
 
 import json
 
-
 RESUME_ANALYSIS_SYSTEM_PROMPT = """
 你是一名资深技术招聘官和简历分析师，负责为中文用户生成“简历能力画像”。
 

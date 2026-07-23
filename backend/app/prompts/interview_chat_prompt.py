@@ -13,6 +13,11 @@ def build_answer_review_messages(
 ) -> list[dict[str, str]]:
     """Build a private rubric prompt used to decide whether a question is answered."""
 
+    # Resume analysis is intentionally not embedded here. The current
+    # question and candidate answer are sufficient for relevance checking,
+    # while sending the full resume on every turn adds several seconds of
+    # prompt processing latency.
+    del resume_analysis
     return [
         {
             "role": "system",
@@ -27,7 +32,6 @@ def build_answer_review_messages(
             "role": "user",
             "content": (
                 "请按以下格式返回：{\"is_valid\":true或false,\"feedback\":\"简短中文反馈\"}\n"
-                f"候选人简历画像：{json.dumps(resume_analysis or {}, ensure_ascii=False)}\n"
                 f"当前面试问题：{current_question}\n"
                 f"候选人回答：{answer}"
             ),

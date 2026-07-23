@@ -12,16 +12,16 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.llm.deepseek import DeepSeekClient
-from app.models.interview import Interview
+from app.core.distributed_lock import acquire_lock, release_lock
+from app.llm.deepseek import DeepSeekAPIError, DeepSeekClient
 from app.models.evaluation_report import EvaluationReport
+from app.models.interview import Interview
 from app.models.job_position import JobPosition
 from app.models.message import Message
 from app.models.question import Question
 from app.models.resume import Resume
 from app.prompts.interview_chat_prompt import (
     build_answer_review_messages,
-    build_interview_chat_messages,
 )
 from app.schemas.interview import (
     InterviewChatResponse,
@@ -32,8 +32,7 @@ from app.schemas.interview import (
     MessageResponse,
 )
 from app.services.llm_usage_service import add_llm_usage
-from app.services.question_service import QuestionService
-
+from app.services.question_service import QuestionGenerationError, QuestionService
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +61,10 @@ class InterviewAnswersRequiredError(InterviewError):
     """Raised when a session is ended before any valid answer is saved."""
 
 
+class InterviewDuplicateRequestError(InterviewError):
+    """Raised when a client retries an already accepted answer request."""
+
+
 @dataclass(slots=True)
 class StreamContext:
     """Immutable context captured before an SSE response starts."""
@@ -77,6 +80,9 @@ class StreamContext:
     answer_is_valid: bool
     answer_feedback: str
     should_finish: bool = False
+    idempotent_content: str | None = None
+    lock_client: Any = None
+    lock_token: str | None = None
 
 
 class InterviewService:
@@ -98,8 +104,56 @@ class InterviewService:
         user_id: int,
         resume_id: int,
         job_id: int,
+        request_id: str,
+    ) -> InterviewStartResponse:
+        """Serialize one idempotent start request across app workers."""
+
+        lock_key = f"interview-start:{user_id}:{job_id}"
+        client, token = await acquire_lock(lock_key, ttl_seconds=120)
+        try:
+            return await self._start_interview_locked(
+                user_id=user_id,
+                resume_id=resume_id,
+                job_id=job_id,
+                request_id=request_id,
+            )
+        finally:
+            await release_lock(client, lock_key, token)
+
+    async def _start_interview_locked(
+        self,
+        *,
+        user_id: int,
+        resume_id: int,
+        job_id: int,
+        request_id: str,
     ) -> InterviewStartResponse:
         """Create a session and persist the first generated question."""
+
+        existing = await self.session.scalar(
+            select(Interview).where(
+                Interview.user_id == user_id,
+                Interview.start_request_id == request_id,
+            )
+        )
+        if existing is not None:
+            first_message = await self.session.scalar(
+                select(Message)
+                .where(Message.interview_id == existing.id, Message.role == "assistant")
+                .order_by(Message.id.asc())
+                .limit(1)
+            )
+            job = await self.session.scalar(
+                select(JobPosition).where(JobPosition.id == existing.job_id)
+            )
+            if first_message is None or job is None:
+                raise InterviewError("面试创建请求尚未完整处理，请稍后重试")
+            return InterviewStartResponse(
+                interview=InterviewResponse.model_validate(existing).model_copy(
+                    update={"position": job.position}
+                ),
+                first_message=MessageResponse.model_validate(first_message),
+            )
 
         resume, job, questions = await self._load_owned_resources(
             user_id=user_id, resume_id=resume_id, job_id=job_id
@@ -124,19 +178,22 @@ class InterviewService:
         ]
         # The preparation-page question set is reference-only. Generate and
         # snapshot a fresh set for every newly started simulation.
-        question_snapshot = await QuestionService(
-            self.session, self.deepseek_client
-        ).generate_simulation_questions(
-            resume_id=resume_id,
-            job_id=job_id,
-            user_id=user_id,
-        )
+        try:
+            async with asyncio.timeout(75):
+                question_snapshot = await QuestionService(self.session).generate_simulation_questions(
+                    resume_id=resume_id,
+                    job_id=job_id,
+                    user_id=user_id,
+                )
+        except TimeoutError as error:
+            raise QuestionGenerationError("模拟面试题生成超时，请稍后重试") from error
         interview = Interview(
             user_id=user_id,
             resume_id=resume_id,
             job_id=job_id,
             total_questions=len(question_snapshot),
             question_snapshot=question_snapshot,
+            start_request_id=request_id,
         )
         self.session.add(interview)
         await self.session.flush()
@@ -174,12 +231,43 @@ class InterviewService:
         user_id: int,
         interview_id: int,
         content: str,
+        request_id: str,
+    ) -> InterviewChatResponse:
+        """Serialize candidate messages for one interview."""
+
+        lock_key = f"interview-chat:{interview_id}"
+        client, token = await acquire_lock(lock_key)
+        try:
+            return await self._chat_locked(
+                user_id=user_id,
+                interview_id=interview_id,
+                content=content,
+                request_id=request_id,
+            )
+        finally:
+            await release_lock(client, lock_key, token)
+
+    async def _chat_locked(
+        self,
+        *,
+        user_id: int,
+        interview_id: int,
+        content: str,
+        request_id: str,
     ) -> InterviewChatResponse:
         """Persist a candidate answer, call DeepSeek, and persist its follow-up."""
 
         context = await self._prepare_candidate_message(
-            user_id=user_id, interview_id=interview_id, content=content
+            user_id=user_id,
+            interview_id=interview_id,
+            content=content,
+            request_id=request_id,
         )
+        if context.get("idempotent_message") is not None:
+            return InterviewChatResponse(
+                interview_id=interview_id,
+                message=MessageResponse.model_validate(context["idempotent_message"]),
+            )
         if context["should_finish"]:
             final_message = await self._save_assistant_message(
                 interview_id, self.FINAL_MESSAGE
@@ -190,25 +278,11 @@ class InterviewService:
                 message=MessageResponse.model_validate(final_message),
             )
 
-        assistant_content = await self.deepseek_client.chat_completion(
-            messages=build_interview_chat_messages(
-                resume_analysis=context["resume_analysis"],
-                job_description=context["job_description"],
-                generated_questions=context["question_bank"],
-                history=context["history"],
-                current_question=context["current_question"],
-                next_question=context["next_question"],
-                answer_is_valid=context["answer_is_valid"],
-                answer_feedback=context["answer_feedback"],
-            ),
-            model=settings.deepseek_model,
-            json_mode=False,
-        )
-        add_llm_usage(
-            self.session,
-            client=self.deepseek_client,
-            user_id=user_id,
-            feature="interview_chat",
+        assistant_content = self._compose_controlled_interviewer_reply(
+            answer_is_valid=context["answer_is_valid"],
+            answer_feedback=context["answer_feedback"],
+            current_question=context["current_question"],
+            next_question=context["next_question"],
         )
         assistant_message = await self._save_assistant_message(interview_id, assistant_content)
         await self._cache_interview_by_id(interview_id)
@@ -365,12 +439,38 @@ class InterviewService:
         user_id: int,
         interview_id: int,
         content: str,
+        request_id: str,
     ) -> StreamContext:
         """Save the candidate message before the HTTP stream begins."""
 
-        context = await self._prepare_candidate_message(
-            user_id=user_id, interview_id=interview_id, content=content
-        )
+        lock_key = f"interview-chat:{interview_id}"
+        client, token = await acquire_lock(lock_key)
+        try:
+            context = await self._prepare_candidate_message(
+                user_id=user_id,
+                interview_id=interview_id,
+                content=content,
+                request_id=request_id,
+            )
+        except Exception:
+            await release_lock(client, lock_key, token)
+            raise
+        if context.get("idempotent_message") is not None:
+            return StreamContext(
+                interview_id=interview_id,
+                user_id=user_id,
+                resume_analysis=None,
+                job_description="",
+                question_bank=[],
+                history=[],
+                current_question="",
+                next_question=None,
+                answer_is_valid=True,
+                answer_feedback="",
+                idempotent_content=context["idempotent_message"].content,
+                lock_client=client,
+                lock_token=token,
+            )
         return StreamContext(
             interview_id=interview_id,
             user_id=user_id,
@@ -383,10 +483,32 @@ class InterviewService:
             answer_is_valid=context["answer_is_valid"],
             answer_feedback=context["answer_feedback"],
             should_finish=context["should_finish"],
+            lock_client=client,
+            lock_token=token,
         )
 
     async def stream_response(self, context: StreamContext):
+        """Hold the per-interview lock until streaming and persistence finish."""
+
+        try:
+            async for chunk in self._stream_response_locked(context):
+                yield chunk
+        finally:
+            if context.lock_client is not None and context.lock_token is not None:
+                await release_lock(
+                    context.lock_client,
+                    f"interview-chat:{context.interview_id}",
+                    context.lock_token,
+                )
+
+    async def _stream_response_locked(self, context: StreamContext):
         """Yield DeepSeek chunks and save the complete assistant message at the end."""
+
+        if context.idempotent_content is not None:
+            for offset in range(0, len(context.idempotent_content), 2):
+                yield context.idempotent_content[offset : offset + 2]
+                await asyncio.sleep(0.02)
+            return
 
         if context.should_finish:
             for offset in range(0, len(self.FINAL_MESSAGE), 2):
@@ -396,36 +518,48 @@ class InterviewService:
             await self._cache_interview_by_id(context.interview_id)
             return
 
-        messages = build_interview_chat_messages(
-            resume_analysis=context.resume_analysis,
-            job_description=context.job_description,
-            generated_questions=context.question_bank,
-            history=context.history,
-            current_question=context.current_question,
-            next_question=context.next_question,
-            answer_is_valid=context.answer_is_valid,
-            answer_feedback=context.answer_feedback,
-        )
-        chunks: list[str] = []
-        async for chunk in self.deepseek_client.chat_completion_stream(
-            messages=messages,
-            model=settings.deepseek_model,
-        ):
-            chunks.append(chunk)
-            yield chunk
-
-        assistant_content = "".join(chunks).strip()
-        if not assistant_content:
-            raise InterviewError("AI 面试官没有返回有效内容")
-
-        add_llm_usage(
-            self.session,
-            client=self.deepseek_client,
-            user_id=context.user_id,
-            feature="interview_chat",
-        )
+        # The private answer review is the only model call needed for this
+        # turn. A second model call previously delayed the first visible word
+        # and could invent a question outside the immutable eight-question
+        # snapshot. Build the transition deterministically from that snapshot.
+        assistant_content = self._build_controlled_interviewer_reply(context)
+        for offset in range(0, len(assistant_content), 2):
+            yield assistant_content[offset : offset + 2]
+            await asyncio.sleep(0.035)
         await self._save_assistant_message(context.interview_id, assistant_content)
         await self._cache_interview_by_id(context.interview_id)
+        return
+
+    @staticmethod
+    def _build_controlled_interviewer_reply(context: StreamContext) -> str:
+        """Return feedback without allowing a model-invented extra question."""
+
+        return InterviewService._compose_controlled_interviewer_reply(
+            answer_is_valid=context.answer_is_valid,
+            answer_feedback=context.answer_feedback,
+            current_question=context.current_question,
+            next_question=context.next_question,
+        )
+
+    @staticmethod
+    def _compose_controlled_interviewer_reply(
+        *,
+        answer_is_valid: bool,
+        answer_feedback: str,
+        current_question: str,
+        next_question: str | None,
+    ) -> str:
+        """Compose one strict interview transition from persisted state."""
+
+        feedback = answer_feedback.strip().rstrip("。！？!?；;，,")
+        if answer_is_valid:
+            prefix = feedback or "好的，我了解了你的思路"
+            if next_question:
+                return f"{prefix}。我们继续下一个问题：{next_question}"
+            return InterviewService.FINAL_MESSAGE
+
+        prefix = feedback or "你的回答还没有充分回应当前问题，请补充具体做法和依据"
+        return f"{prefix}。请继续回答当前问题：{current_question}"
 
     async def _load_owned_resources(
         self,
@@ -450,10 +584,15 @@ class InterviewService:
         )
         return resume, job, list(result.scalars().all())
 
-    async def _get_owned_interview(self, *, user_id: int, interview_id: int) -> Interview:
-        interview = await self.session.scalar(
-            select(Interview).where(Interview.id == interview_id, Interview.user_id == user_id)
+    async def _get_owned_interview(
+        self, *, user_id: int, interview_id: int, for_update: bool = False
+    ) -> Interview:
+        statement = select(Interview).where(
+            Interview.id == interview_id, Interview.user_id == user_id
         )
+        if for_update:
+            statement = statement.with_for_update()
+        interview = await self.session.scalar(statement)
         if interview is None:
             raise InterviewResourceNotFoundError("未找到面试记录")
         return interview
@@ -464,16 +603,40 @@ class InterviewService:
         user_id: int,
         interview_id: int,
         content: str,
+        request_id: str,
     ) -> dict[str, Any]:
         """Review an answer, advance only when valid, and build LLM context."""
 
-        interview = await self._get_owned_interview(user_id=user_id, interview_id=interview_id)
-        if interview.status != "in_progress":
-            raise InterviewNotActiveError("本次面试已结束，无法继续回答")
-
+        interview = await self._get_owned_interview(
+            user_id=user_id, interview_id=interview_id, for_update=True
+        )
         normalized_content = content.strip()
         if not normalized_content:
             raise InterviewError("消息内容不能为空")
+
+        duplicate = await self.session.scalar(
+            select(Message).where(
+                Message.interview_id == interview_id,
+                Message.client_request_id == request_id,
+            )
+        )
+        if duplicate is not None:
+            existing_reply = await self.session.scalar(
+                select(Message)
+                .where(
+                    Message.interview_id == interview_id,
+                    Message.role == "assistant",
+                    Message.id > duplicate.id,
+                )
+                .order_by(Message.id.asc())
+                .limit(1)
+            )
+            if existing_reply is None:
+                raise InterviewDuplicateRequestError("该回答正在处理中，请稍后重试")
+            return {"idempotent_message": existing_reply}
+
+        if interview.status != "in_progress":
+            raise InterviewNotActiveError("本次面试已结束，无法继续回答")
 
         resume, job, questions = await self._load_owned_resources(
             user_id=user_id,
@@ -509,6 +672,7 @@ class InterviewService:
                 content=normalized_content,
                 token_count=self._estimate_tokens(normalized_content),
                 is_valid_answer=answer_is_valid,
+                client_request_id=request_id,
             )
         )
 
@@ -521,7 +685,10 @@ class InterviewService:
             interview.status = "completed"
             interview.end_time = datetime.now(timezone.utc)
 
-        await self.session.commit()
+        # Keep the candidate message and progress in the same transaction as
+        # the assistant response. A failed/disconnected stream is therefore
+        # rolled back instead of silently consuming one interview question.
+        await self.session.flush()
         history = await self._get_messages(interview_id)
         next_question = (
             interview_questions[interview.current_question_index]["question"]
@@ -571,37 +738,89 @@ class InterviewService:
     ) -> tuple[bool, str]:
         """Use a private AI rubric to decide whether the current question is answered."""
 
-        raw_content = await self.deepseek_client.chat_completion(
-            messages=build_answer_review_messages(
-                resume_analysis=resume_analysis,
-                current_question=current_question,
-                answer=answer,
-            ),
-            model=settings.deepseek_model,
-            json_mode=False,
-            allow_reasoning_json_fallback=True,
-            max_tokens=256,
-        )
+        try:
+            raw_content = await self.deepseek_client.chat_completion(
+                messages=build_answer_review_messages(
+                    resume_analysis=resume_analysis,
+                    current_question=current_question,
+                    answer=answer,
+                ),
+                model=settings.deepseek_model,
+                # deepseek-v4-pro may reject response_format/json mode.
+                # The prompt still requires JSON and the parser is defensive.
+                json_mode=False,
+                allow_reasoning_json_fallback=True,
+                max_tokens=96,
+                temperature=0.0,
+            )
+        except DeepSeekAPIError:
+            # Answer review is an auxiliary guard, not the interview itself.
+            # A temporary upstream failure must not turn a valid interview
+            # answer into an HTTP 502 and block the whole session.
+            logger.warning("Answer review upstream failed; using local fallback")
+            return self._fallback_answer_review(answer)
         add_llm_usage(
             self.session,
             client=self.deepseek_client,
             user_id=user_id,
             feature="interview_answer_review",
         )
-        return self._parse_answer_review(raw_content)
+        is_valid, feedback = self._parse_answer_review(raw_content)
+        # A malformed provider payload is different from an explicit AI
+        # judgment that the answer is invalid. Treat only the former as a
+        # fallback so a provider formatting glitch cannot create a phantom
+        # extra question.
+        if not is_valid and feedback.startswith("请围绕当前问题补充"):
+            return self._fallback_answer_review(answer)
+        return is_valid, feedback
+
+    @staticmethod
+    def _fallback_answer_review(answer: str) -> tuple[bool, str]:
+        """Keep the interview moving when the private reviewer is unavailable."""
+
+        compact = "".join(answer.split())
+        is_substantive = len(compact) >= 16 and not compact.isdigit()
+        if is_substantive:
+            return True, "回答包含了具体思路，我们继续面试"
+        return False, "回答内容还比较简略，请补充具体做法、原因或实际结果"
 
     @staticmethod
     def _parse_answer_review(raw_content: str) -> tuple[bool, str]:
-        """Parse the private answer-review JSON response."""
+        """Parse the private answer-review response without breaking the interview."""
 
         content = raw_content.strip().replace("```json", "").replace("```", "").strip()
-        try:
-            payload = json.loads(content)
-        except json.JSONDecodeError as error:
-            raise InterviewError("AI 无法判断当前回答是否有效，请重新回答") from error
-        if not isinstance(payload, dict) or "is_valid" not in payload:
-            raise InterviewError("AI 返回的回答判定无效，请重新回答")
-        is_valid = payload["is_valid"] is True or str(payload["is_valid"]).lower() == "true"
+        payload: Any = None
+        candidates = [content]
+        object_start = content.find("{")
+        object_end = content.rfind("}")
+        if object_start >= 0 and object_end > object_start:
+            candidates.append(content[object_start : object_end + 1])
+
+        for candidate in candidates:
+            try:
+                parsed = json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict) and "is_valid" in parsed:
+                payload = parsed
+                break
+
+        if payload is None:
+            logger.warning("DeepSeek returned an invalid answer-review payload")
+            return False, "请围绕当前问题补充更具体的说明后再继续。"
+
+        raw_is_valid = payload["is_valid"]
+        if isinstance(raw_is_valid, bool):
+            is_valid = raw_is_valid
+        else:
+            normalized = str(raw_is_valid).strip().casefold()
+            if normalized in {"true", "1", "yes", "是"}:
+                is_valid = True
+            elif normalized in {"false", "0", "no", "否"}:
+                is_valid = False
+            else:
+                logger.warning("DeepSeek returned an unsupported is_valid value")
+                return False, "请围绕当前问题补充更具体的说明后再继续。"
         feedback = str(payload.get("feedback") or "").strip()
         return is_valid, feedback[:500]
 

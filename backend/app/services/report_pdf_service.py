@@ -17,7 +17,6 @@ from reportlab.platypus import HRFlowable, Paragraph, SimpleDocTemplate, Spacer,
 
 from app.schemas.evaluation import EvaluationReportResponse
 
-
 PDF_FONT = "STSong-Light"
 
 

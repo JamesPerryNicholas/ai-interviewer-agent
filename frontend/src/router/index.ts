@@ -100,6 +100,31 @@ const router = createRouter({
   ],
 });
 
+const CHUNK_RELOAD_KEY = "ai-interviewer-chunk-reload";
+
+/**
+ * A container deployment replaces hashed lazy-route chunks. Tabs that were
+ * opened before the deployment must reload the new index instead of remaining
+ * stuck on the current page when an old chunk URL disappears.
+ */
+router.onError((error, to) => {
+  const message = error instanceof Error ? error.message : String(error);
+  const isChunkLoadError = /dynamically imported module|loading chunk|module script/i.test(message);
+  if (!isChunkLoadError) return;
+
+  if (sessionStorage.getItem(CHUNK_RELOAD_KEY) === to.fullPath) {
+    sessionStorage.removeItem(CHUNK_RELOAD_KEY);
+    return;
+  }
+
+  sessionStorage.setItem(CHUNK_RELOAD_KEY, to.fullPath);
+  window.location.replace(to.fullPath);
+});
+
+router.afterEach(() => {
+  sessionStorage.removeItem(CHUNK_RELOAD_KEY);
+});
+
 router.beforeEach(async (to) => {
   const userStore = useUserStore();
   const adminStore = useAdminStore();
@@ -108,12 +133,12 @@ router.beforeEach(async (to) => {
     if (!adminStore.isAuthenticated) {
       return { name: "admin-login", query: { redirect: to.fullPath } };
     }
-    if (!adminStore.admin) {
-      try {
-        await adminStore.loadAdmin();
-      } catch {
+    try {
+      if (!(await adminStore.ensureSession())) {
         return { name: "admin-login", query: { redirect: to.fullPath } };
       }
+    } catch {
+      return { name: "admin-login", query: { redirect: to.fullPath } };
     }
   }
 
@@ -122,21 +147,29 @@ router.beforeEach(async (to) => {
       return { name: "login", query: { redirect: to.fullPath } };
     }
 
-    if (!userStore.user) {
-      try {
-        await userStore.loadUser();
-      } catch {
+    try {
+      if (!(await userStore.ensureSession())) {
         return { name: "login", query: { redirect: to.fullPath } };
       }
+    } catch {
+      return { name: "login", query: { redirect: to.fullPath } };
     }
   }
 
   if (to.name === "login" && userStore.isAuthenticated) {
-    return { name: "dashboard" };
+    try {
+      if (await userStore.ensureSession()) return { name: "dashboard" };
+    } catch {
+      // Invalid persisted credentials are cleared by the store.
+    }
   }
 
   if (to.name === "admin-login" && adminStore.isAuthenticated) {
-    return { name: "admin-usage" };
+    try {
+      if (await adminStore.ensureSession()) return { name: "admin-usage" };
+    } catch {
+      // Invalid persisted credentials are cleared by the store.
+    }
   }
 
   return true;

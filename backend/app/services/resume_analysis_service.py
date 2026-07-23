@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.core.distributed_lock import acquire_lock, release_lock
 from app.llm.deepseek import DeepSeekClient, DeepSeekError
 from app.models.resume import Resume
 from app.prompts.resume_prompt import build_resume_analysis_messages
@@ -36,6 +37,18 @@ class ResumeAnalysisService:
         self.deepseek_client = deepseek_client or DeepSeekClient()
 
     async def analyze_resume(self, resume_id: int, user_id: int) -> ResumeAnalysisResponse:
+        """Prevent concurrent analysis calls for the same resume."""
+
+        lock_key = f"resume-analysis:{resume_id}"
+        client, token = await acquire_lock(lock_key)
+        try:
+            return await self._analyze_resume_locked(resume_id, user_id)
+        finally:
+            await release_lock(client, lock_key, token)
+
+    async def _analyze_resume_locked(
+        self, resume_id: int, user_id: int
+    ) -> ResumeAnalysisResponse:
         """Analyze one resume only when it belongs to the authenticated user."""
 
         result = await self.session.execute(
@@ -46,6 +59,8 @@ class ResumeAnalysisService:
             raise ResumeNotFoundError("未找到简历")
         if not resume.content.strip():
             raise ResumeAnalysisError("简历中没有可解析的文本")
+        if len(resume.content) > settings.max_resume_text_chars:
+            raise ResumeAnalysisError("简历文本超过系统允许的最大长度")
 
         fallback_analysis: ResumeAnalysisResponse | None = None
         for attempt in range(2):

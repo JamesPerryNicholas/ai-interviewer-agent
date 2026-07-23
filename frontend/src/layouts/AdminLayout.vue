@@ -11,9 +11,9 @@ const router = useRouter();
 const adminStore = useAdminStore();
 const activeMenu = computed(() => route.path);
 
-function logout() {
-  adminStore.logout();
-  router.replace("/login_Admin");
+async function logout() {
+  await adminStore.logout();
+  await router.replace("/login_Admin");
 }
 </script>
 

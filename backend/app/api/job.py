@@ -13,7 +13,6 @@ from app.models.job_position import JobPosition
 from app.models.user import User
 from app.schemas.job import JobPositionCreate, JobPositionResponse
 
-
 router = APIRouter(prefix="/api/job", tags=["job"])
 
 

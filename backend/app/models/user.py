@@ -30,6 +30,7 @@ class User(Base):
     )
     email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    token_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     avatar_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     avatar_data: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     avatar_content_type: Mapped[str | None] = mapped_column(String(100), nullable=True)

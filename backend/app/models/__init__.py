@@ -1,9 +1,9 @@
 """ORM models exported for application imports and Alembic metadata discovery."""
 
 from app.models.admin_user import AdminUser
-from app.models.interview import Interview
 from app.models.answer import Answer
 from app.models.evaluation_report import EvaluationReport
+from app.models.interview import Interview
 from app.models.job_position import JobPosition
 from app.models.llm_usage import LLMUsage
 from app.models.login_record import LoginRecord

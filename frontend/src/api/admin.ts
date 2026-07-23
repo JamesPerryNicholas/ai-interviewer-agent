@@ -1,4 +1,5 @@
 import axios from "axios";
+import { API_BASE_URL } from "./base";
 
 export const ADMIN_TOKEN_KEY = "ai-interviewer-admin-token";
 export const ADMIN_KEY = "ai-interviewer-admin";
@@ -75,7 +76,7 @@ export interface ManagedUser {
 }
 
 const adminRequest = axios.create({
-  baseURL: "http://localhost:8000",
+  baseURL: API_BASE_URL,
   timeout: 15_000,
   headers: { "Content-Type": "application/json" },
 });
@@ -94,6 +95,9 @@ adminRequest.interceptors.response.use(
     if (error.response?.status === 401) {
       localStorage.removeItem(ADMIN_TOKEN_KEY);
       localStorage.removeItem(ADMIN_KEY);
+      if (window.location.pathname !== "/login_Admin") {
+        window.location.replace("/login_Admin");
+      }
     }
     return Promise.reject(error);
   },
@@ -107,6 +111,10 @@ export async function loginAdmin(username: string, password: string): Promise<Ad
 export async function getAdminProfile(): Promise<AdminAccount> {
   const response = await adminRequest.get<AdminAccount>("/api/admin/me");
   return response.data;
+}
+
+export async function logoutAdmin(): Promise<void> {
+  await adminRequest.post("/api/admin/auth/logout");
 }
 
 export async function getUsageSummary(days = 7, page = 1, pageSize = 10): Promise<UsageSummary> {

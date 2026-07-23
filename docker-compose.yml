@@ -25,15 +25,21 @@ services:
       dockerfile: Dockerfile
     container_name: ai-interviewer-backend
     restart: unless-stopped
+    # 给正在进行的 SSE/LLM 请求时间正常结束并释放 Redis 分布式锁，
+    # 避免重构或部署时强制终止进程留下临时 409 冲突。
+    stop_grace_period: 3m
     environment:
+      APP_ENV: ${APP_ENV:-production}
       APP_NAME: ${APP_NAME:-AI Interview Agent Backend}
       DEBUG: ${DEBUG:-false}
       # 容器之间使用 Docker 服务名通信，不能使用 localhost
-      DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-ai_interviewer}"
-      REDIS_URL: "redis://redis:6379/0"
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-development-secret-key}
+      DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/${POSTGRES_DB:-ai_interviewer}"
+      REDIS_URL: "redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set}@redis:6379/0"
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY must be set}
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
       JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-60}
+      JWT_ISSUER: ${JWT_ISSUER:-ai-interviewer-agent}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-ai-interviewer-web}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-chat}
       DEEPSEEK_TIMEOUT_SECONDS: ${DEEPSEEK_TIMEOUT_SECONDS:-120}
@@ -41,10 +47,19 @@ services:
       DEEPSEEK_EVALUATION_MAX_TOKENS: ${DEEPSEEK_EVALUATION_MAX_TOKENS:-2600}
       # 管理员后台初始化账号，生产环境请通过 .env 修改
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin@123}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD must be set}
       ADMIN_BUDGET_TOKENS: ${ADMIN_BUDGET_TOKENS:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      TRUSTED_PROXY_NETWORKS: ${TRUSTED_PROXY_NETWORKS:-127.0.0.1/32,::1/128,172.16.0.0/12}
+      MAX_RESUME_UPLOAD_BYTES: ${MAX_RESUME_UPLOAD_BYTES:-10485760}
+      MAX_PDF_PAGES: ${MAX_PDF_PAGES:-50}
+      MAX_RESUME_TEXT_CHARS: ${MAX_RESUME_TEXT_CHARS:-80000}
+      MAX_JOB_DESCRIPTION_CHARS: ${MAX_JOB_DESCRIPTION_CHARS:-20000}
+      MAX_AVATAR_UPLOAD_BYTES: ${MAX_AVATAR_UPLOAD_BYTES:-5242880}
+      RATE_LIMIT_FAIL_CLOSED: ${RATE_LIMIT_FAIL_CLOSED:-true}
+      DISTRIBUTED_LOCK_TTL_SECONDS: ${DISTRIBUTED_LOCK_TTL_SECONDS:-600}
     ports:
-      - "${BACKEND_PORT:-8000}:8000"
+      - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
     volumes:
       # 持久化用户上传的简历和头像，后端容器重建后仍然保留
       - resume_storage:/app/storage
@@ -70,9 +85,10 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-ai_interviewer}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+    # 不发布宿主机端口，仅允许 Docker 内部网络中的后端服务访问。
+    expose:
+      - "5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -88,13 +104,16 @@ services:
     image: redis:7-alpine
     container_name: ai-interviewer-redis
     restart: unless-stopped
-    ports:
-      - "${REDIS_PORT:-6379}:6379"
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD must be set}
+    # 不发布宿主机端口，仅允许 Docker 内部网络中的后端服务访问。
+    expose:
+      - "6379"
     volumes:
       - redis_data:/data
-    command: redis-server --appendonly yes
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\""]
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "REDISCLI_AUTH=$$REDIS_PASSWORD redis-cli ping"]
       interval: 5s
       timeout: 3s
       retries: 10

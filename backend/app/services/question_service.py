@@ -1,5 +1,6 @@
 """Service for generating and persisting personalized interview questions."""
 
+import asyncio
 import json
 from datetime import datetime, timezone
 from typing import Any
@@ -9,9 +10,10 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.core.distributed_lock import acquire_lock, release_lock
 from app.llm.deepseek import DeepSeekClient
-from app.models.job_position import JobPosition
 from app.models.interview import Interview
+from app.models.job_position import JobPosition
 from app.models.question import Question
 from app.models.resume import Resume
 from app.models.user import User
@@ -44,9 +46,30 @@ class QuestionService:
         deepseek_client: DeepSeekClient | None = None,
     ) -> None:
         self.session = session
-        self.deepseek_client = deepseek_client or DeepSeekClient()
+        self.deepseek_client = deepseek_client or DeepSeekClient(
+            timeout=min(settings.deepseek_timeout_seconds, 60.0)
+        )
 
     async def generate_questions(
+        self,
+        resume_id: int,
+        job_id: int,
+        user_id: int,
+    ) -> list[QuestionResponse]:
+        """Serialize reference-question generation for one owned job."""
+
+        lock_key = f"question-generation:{user_id}:{job_id}"
+        client, token = await acquire_lock(lock_key, ttl_seconds=120)
+        try:
+            try:
+                async with asyncio.timeout(75):
+                    return await self._generate_questions_locked(resume_id, job_id, user_id)
+            except TimeoutError as error:
+                raise QuestionGenerationError("面试题生成超时，请稍后重试") from error
+        finally:
+            await release_lock(client, lock_key, token)
+
+    async def _generate_questions_locked(
         self,
         resume_id: int,
         job_id: int,
@@ -80,7 +103,7 @@ class QuestionService:
         )
         generated_questions: list[GeneratedQuestion] | None = None
         last_error: QuestionGenerationError | None = None
-        for attempt in range(3):
+        for attempt in range(2):
             if attempt:
                 messages.append(
                     {
@@ -194,7 +217,7 @@ class QuestionService:
             generation_nonce=datetime.now(timezone.utc).isoformat(),
         )
         last_error: QuestionGenerationError | None = None
-        for attempt in range(4):
+        for attempt in range(2):
             messages = [dict(message) for message in base_messages]
             if attempt:
                 messages.append(
@@ -202,7 +225,8 @@ class QuestionService:
                         "role": "user",
                         "content": (
                             "上一次结果不符合要求。请完全重新设计 8 道问题：每道问题必须是中文，"
-                            "本批次内部不能重复，也不能与历史面试问题重复；只返回 JSON 数组。"
+                            "本批次内部不能重复，也不能与历史面试问题重复；"
+                            "只返回 {\"questions\":[...]} JSON 对象。"
                         ),
                     }
                 )
@@ -210,10 +234,13 @@ class QuestionService:
                 raw_content = await self.deepseek_client.chat_completion(
                     messages=messages,
                     model=settings.deepseek_model,
+                    # deepseek-v4-pro does not reliably support the OpenAI
+                    # response_format parameter on this endpoint. Keep the
+                    # prompt JSON-only and parse the object defensively.
                     json_mode=False,
                     allow_reasoning_json_fallback=True,
-                    max_tokens=settings.deepseek_question_max_tokens,
-                    temperature=0.7,
+                    max_tokens=min(settings.deepseek_question_max_tokens, 900),
+                    temperature=0.35,
                 )
                 add_llm_usage(
                     self.session,

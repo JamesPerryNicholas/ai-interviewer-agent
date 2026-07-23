@@ -1,31 +1,19 @@
 # AI Interview Agent
 
-## 前端语言选择器
+## 当前能力
 
-Vue前端界面默认为英语模式，并在右上角的边框处提供了一项语言选择器。支持的语言有英语、简体中文、日语和
-西班牙语。所选语言会保存在localstorage中，而Element Plus 控件也会遵循相同的语言设置
+- Vue 3 用户端与管理员后台，支持主题、个人资料、岗位和面试历史管理。
+- FastAPI JWT 登录、服务端 Token 失效、登录审计和管理员账号管理。
+- PDF 简历上传、PyMuPDF 文本解析、DeepSeek 结构化分析。
+- 岗位 JD、个性化面试问题、SSE 模拟面试和评分报告 PDF。
+- PostgreSQL 持久化，Redis 承担限流、分布式锁和面试上下文缓存。
+- 前端开发环境直连 `http://localhost:8000`，生产镜像通过 Nginx 同源代理 `/api`。
 
-非认证业务页面在当前阶段仍为模拟状态;认证功能现在调用后端。
+## 简历上传与受保护下载
 
-## 前端和后端认证集成
-
-前端现在使用FastAPl认证服务，而不是模拟登录数据。
-
-- 前端API基础URL:http://localhost:8000
-  登录:POST/api/auth/login
-  注册: POST/api/auth/register
-  个人资料:GET/api/user/profile
-  JWT存储在localStorage中，并自动作为Bearer令牌发送。
-  后端允许来自http://localhost:5173和http://127.0.0.1:5173的cORS请求。
-
-## 第三阶段：简历上传与 PDF 解析
-
-本阶段已完成基础简历业务流程，不包含 Agent 或 LLM：
-
-- `POST /api/resume/upload`：必须携带 JWT，只允许上传 PDF 文件。
-- 文件保存到 `storage/resumes/`，文件名格式为 `user_id_timestamp.pdf`。
-- 使用 PyMuPDF 提取 PDF 纯文本。
-- 保存 `resumes` 数据库记录，`extracted_info` 当前预留为空。
+- `POST /api/resume/upload`：必须携带 JWT，只允许上传符合限制的 PDF。
+- 文件保存在持久化卷 `storage/resumes/`，不提供公开静态目录。
+- `GET /api/resume/{resume_id}/download`：校验 JWT 和简历所有权后下载。
 
 上传测试：
 
@@ -37,18 +25,7 @@ curl.exe -X POST http://localhost:8000/api/resume/upload `
 
 接口文档：<http://localhost:8000/docs>
 
-当前迁移文件：
-
-`backend/alembic/versions/8a009e56fd00_create_resumes_table.py`
-
-基于大模型的智能面试官系统。
-
-当前已完成：
-
-- 第一阶段：FastAPI、PostgreSQL、Redis、Docker 基础架构
-- 第二阶段：用户注册、登录、bcrypt 密码哈希、JWT 身份认证
-
-当前不包含 Agent、LLM、RAG、MCP 或面试业务流程。
+最新迁移：`backend/alembic/versions/m9n0o1p2q3r4_add_token_versions_and_idempotency.py`。
 
 ## 技术栈
 
@@ -99,17 +76,50 @@ ai-interviewer-agent/
 Copy-Item .env.example .env
 ```
 
-重点配置：
+生产部署必须配置以下值，配置为空或仍使用弱口令时后端会拒绝启动：
 
 ```dotenv
-DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/ai_interviewer
-REDIS_URL=redis://localhost:6379/0
-JWT_SECRET_KEY=change-this-development-secret-key
+APP_ENV=production
+POSTGRES_PASSWORD=<数据库强密码>
+REDIS_PASSWORD=<Redis强密码>
+JWT_SECRET_KEY=<至少32字符的随机密钥>
+ADMIN_PASSWORD=<至少12字符的管理员强密码>
 JWT_ALGORITHM=HS256
-JWT_EXPIRE_MINUTES=60
+JWT_EXPIRE_MINUTES=120
 ```
 
-生产环境必须替换 `JWT_SECRET_KEY`，不要使用示例密钥。
+可使用 PowerShell 生成随机 JWT 密钥：
+
+```powershell
+$bytes = New-Object byte[] 48
+[Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+[Convert]::ToBase64String($bytes)
+```
+
+不要提交根目录 `.env`。`.env.example` 只保留变量名，不保存任何真实密码或 API Key。
+
+## 生产安全能力
+
+- JWT 包含签发方、受众、签发时间、唯一 ID 和服务端版本号；退出登录或修改密码后旧 Token 立即失效。
+- 登录、简历上传、简历分析、生成面试题、面试聊天和报告生成均使用 Redis 限流。
+- 面试开始、回答提交、简历分析、问题生成和报告生成使用 Redis 分布式锁；回答请求带幂等 ID。
+- 简历文件不再公开挂载，必须通过 `GET /api/resume/{id}/download` 并校验 JWT 与文件所有权。
+- PDF 最大 10 MB、50 页、提取文本 80000 字符；岗位 JD 最大 20000 字符。
+- 删除用户账号时同步删除业务数据、简历文件和头像文件。
+- PostgreSQL、Redis、后端端口仅绑定到宿主机回环地址。
+
+运行自动化检查：
+
+```powershell
+Set-Location .\backend
+uv sync --group dev
+uv run ruff check app tests
+uv run pytest -q
+
+Set-Location ..\frontend
+npm ci
+npm run build
+```
 
 ## 2. 使用 Docker 启动完整前后端
 
@@ -164,7 +174,7 @@ npm run dev
 
 ## 4. 数据库迁移
 
-当前迁移会创建 `users` 表。后续新增模型时使用：
+后续新增模型时使用：
 
 ```powershell
 uv run alembic revision --autogenerate -m "add domain models"

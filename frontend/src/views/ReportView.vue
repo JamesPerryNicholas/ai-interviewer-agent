@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ArrowLeft, CircleCheck, Download, TrendCharts } from "@element-plus/icons-vue";
+import axios from "axios";
 import * as echarts from "echarts";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
@@ -32,6 +33,11 @@ async function loadReport() {
     await nextTick();
     renderRadar();
   } catch (requestError) {
+    if (axios.isAxiosError(requestError) && requestError.response?.status === 404) {
+      ElMessage.warning("该面试报告不存在或不属于当前账号");
+      await router.replace("/interview/history");
+      return;
+    }
     error.value = "暂时无法加载评分报告，请确认面试已经结束";
     ElMessage.error(requestError instanceof Error ? requestError.message : error.value);
   } finally {

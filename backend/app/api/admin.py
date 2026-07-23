@@ -8,13 +8,14 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import delete, func, select
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_current_admin
 from app.config import settings
-from app.core.security import hash_password, verify_password, create_access_token
+from app.core.rate_limit import client_ip, enforce_rate_limit
+from app.core.security import create_access_token, hash_password, verify_password
 from app.database.session import get_db_session
 from app.models.admin_user import AdminUser
 from app.models.llm_usage import LLMUsage
@@ -31,7 +32,7 @@ from app.schemas.admin import (
     UsageRecordResponse,
     UsageSummaryResponse,
 )
-
+from app.services.user_data_service import UserDataService
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 ACCOUNT_PATTERN = re.compile(r"^[A-Za-z]+$")
@@ -41,9 +42,16 @@ ACCOUNT_PATTERN = re.compile(r"^[A-Za-z]+$")
 async def admin_login(
     payload: AdminLoginRequest,
     session: Annotated[AsyncSession, Depends(get_db_session)],
+    request: Request,
 ) -> AdminTokenResponse:
     """Authenticate an administrator with the separate admin account table."""
 
+    await enforce_rate_limit(
+        "admin-login-ip", client_ip(request), limit=10, window_seconds=900
+    )
+    await enforce_rate_limit(
+        "admin-login-account", payload.username.casefold(), limit=6, window_seconds=900
+    )
     admin = await session.scalar(
         select(AdminUser).where(func.lower(AdminUser.username) == payload.username.strip().lower())
     )
@@ -55,9 +63,22 @@ async def admin_login(
         )
 
     return AdminTokenResponse(
-        access_token=create_access_token(str(admin.id), token_type="admin"),
+        access_token=create_access_token(
+            str(admin.id), token_type="admin", token_version=admin.token_version
+        ),
         admin=AdminResponse.model_validate(admin),
     )
+
+
+@router.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
+async def admin_logout(
+    current_admin: Annotated[AdminUser, Depends(get_current_admin)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> None:
+    """Invalidate all active tokens issued to the current administrator."""
+
+    current_admin.token_version += 1
+    await session.commit()
 
 
 @router.get("/me", response_model=AdminResponse)
@@ -143,8 +164,7 @@ async def delete_user_account(
     if user.username.casefold() == settings.admin_username.casefold():
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="系统管理员账号不可删除")
 
-    await session.execute(delete(User).where(User.id == user_id))
-    await session.commit()
+    await UserDataService(session).delete_user(user)
 
 
 @router.get("/usage/summary", response_model=UsageSummaryResponse)

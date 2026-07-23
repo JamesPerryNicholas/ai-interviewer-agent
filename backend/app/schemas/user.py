@@ -2,8 +2,7 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
-
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 CAREER_STATUSES = (
     "在校学生",
@@ -58,6 +57,25 @@ class PasswordChangeRequest(BaseModel):
 
     current_password: str = Field(min_length=1, max_length=128)
     new_password: str = Field(min_length=8, max_length=128)
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_new_password_strength(cls, value: str) -> str:
+        """Require a mixed-case password containing at least one digit."""
+
+        if not any(character.islower() for character in value):
+            raise ValueError("新密码必须包含至少一个小写字母")
+        if not any(character.isupper() for character in value):
+            raise ValueError("新密码必须包含至少一个大写字母")
+        if not any(character.isdigit() for character in value):
+            raise ValueError("新密码必须包含至少一个数字")
+        return value
+
+
+class AccountDeleteRequest(BaseModel):
+    """Password confirmation required for irreversible account erasure."""
+
+    current_password: str = Field(min_length=1, max_length=128)
 
 
 class LoginRecordResponse(BaseModel):

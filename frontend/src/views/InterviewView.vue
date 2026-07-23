@@ -7,6 +7,7 @@ import { useI18n } from "vue-i18n";
 import { useRoute, useRouter } from "vue-router";
 
 import { endInterviewEarly, finishInterview, getInterviewHistory, recallInterviewMessage, startInterview, streamInterview } from "../api/interview";
+import { apiUrl } from "../api/base";
 import { listJobs } from "../api/job";
 import { getReport } from "../api/report";
 import { getLatestResume } from "../api/resume";
@@ -52,7 +53,7 @@ const reportActionLabel = computed(() => hasReport.value ? "查看报告" : "生
 const interviewTitle = computed(() => activePosition.value ? `${activePosition.value}深入练习` : t("interview.title"));
 const interviewRole = computed(() => activePosition.value || t("interview.role"));
 const TYPEWRITER_INTERVAL_MS = 28;
-const userAvatarUrl = computed(() => userStore.user?.avatar_url ? `http://localhost:8000${userStore.user.avatar_url}` : "");
+const userAvatarUrl = computed(() => apiUrl(userStore.user?.avatar_url));
 
 function formatTime(value: string | Date) {
   return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });

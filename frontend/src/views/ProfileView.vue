@@ -6,6 +6,7 @@ import { ElMessage } from "element-plus";
 import { useI18n } from "vue-i18n";
 
 import { updateProfile } from "../api/user";
+import { apiUrl } from "../api/base";
 import { useUserStore } from "../stores/user";
 
 const { t } = useI18n();
@@ -33,7 +34,7 @@ const CROP_SIZE = 1024;
 const avatarSrc = computed(() => {
   if (previewUrl.value) return previewUrl.value;
   const avatarUrl = userStore.user?.avatar_url;
-  return avatarUrl ? `http://localhost:8000${avatarUrl}` : "";
+  return apiUrl(avatarUrl);
 });
 
 function chooseAvatar(event: Event) {

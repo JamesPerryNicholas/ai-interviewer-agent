@@ -8,9 +8,11 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_current_user
+from app.core.rate_limit import enforce_rate_limit, refund_rate_limit
 from app.database.session import get_db_session
 from app.llm.deepseek import DeepSeekAPIError, DeepSeekConfigurationError
 from app.models.user import User
+from app.schemas.evaluation import InterviewFinishResponse
 from app.schemas.interview import (
     InterviewChatRequest,
     InterviewChatResponse,
@@ -19,19 +21,18 @@ from app.schemas.interview import (
     InterviewStartRequest,
     InterviewStartResponse,
 )
-from app.schemas.evaluation import InterviewFinishResponse
+from app.schemas.question import GenerateQuestionsRequest, QuestionResponse
 from app.services.evaluation_service import (
     EvaluationError,
     EvaluationNotReadyError,
     EvaluationResourceNotFoundError,
     EvaluationService,
 )
-from app.schemas.question import GenerateQuestionsRequest, QuestionResponse
 from app.services.interview_service import (
-    InterviewError,
     InterviewAnswersRequiredError,
-    InterviewQuestionCountError,
+    InterviewError,
     InterviewNotActiveError,
+    InterviewQuestionCountError,
     InterviewQuestionsRequiredError,
     InterviewResourceNotFoundError,
     InterviewService,
@@ -42,7 +43,6 @@ from app.services.question_service import (
     QuestionService,
     ResumeAnalysisRequiredError,
 )
-
 
 router = APIRouter(prefix="/api/interview", tags=["interview"])
 
@@ -55,12 +55,21 @@ async def start_interview(
 ) -> InterviewStartResponse:
     """Create an owned interview and return its first generated question."""
 
+    limit_consumed = False
+    created = False
     try:
-        return await InterviewService(session).start_interview(
+        await enforce_rate_limit(
+            "interview-start", str(current_user.id), limit=20, window_seconds=3600
+        )
+        limit_consumed = True
+        result = await InterviewService(session).start_interview(
             user_id=current_user.id,
             resume_id=payload.resume_id,
             job_id=payload.job_id,
+            request_id=payload.request_id,
         )
+        created = True
+        return result
     except InterviewQuestionsRequiredError as error:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -97,6 +106,9 @@ async def start_interview(
         ) from error
     except QuestionGenerationError as error:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error)) from error
+    finally:
+        if limit_consumed and not created:
+            await refund_rate_limit("interview-start", str(current_user.id))
 
 
 @router.post("/chat", response_model=InterviewChatResponse)
@@ -108,10 +120,14 @@ async def interview_chat(
     """Send one answer and receive a persisted assistant follow-up."""
 
     try:
+        await enforce_rate_limit(
+            "interview-chat", str(current_user.id), limit=120, window_seconds=3600
+        )
         return await InterviewService(session).chat(
             user_id=current_user.id,
             interview_id=payload.interview_id,
             content=payload.message,
+            request_id=payload.request_id,
         )
     except InterviewResourceNotFoundError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="未找到面试记录") from error
@@ -167,6 +183,9 @@ async def finish_interview(
     """Finish an interview and generate its AI evaluation report."""
 
     try:
+        await enforce_rate_limit(
+            "interview-evaluation", str(current_user.id), limit=8, window_seconds=3600
+        )
         report = await EvaluationService(session).evaluate_interview(
             user_id=current_user.id,
             interview_id=interview_id,
@@ -201,6 +220,9 @@ async def end_interview_early(
     """End an interview on the candidate's request and score saved answers."""
 
     try:
+        await enforce_rate_limit(
+            "interview-evaluation", str(current_user.id), limit=8, window_seconds=3600
+        )
         await InterviewService(session).end_early(
             user_id=current_user.id,
             interview_id=interview_id,
@@ -269,10 +291,14 @@ async def interview_stream(
 
     service = InterviewService(session)
     try:
+        await enforce_rate_limit(
+            "interview-chat", str(current_user.id), limit=120, window_seconds=3600
+        )
         context = await service.prepare_stream_chat(
             user_id=current_user.id,
             interview_id=payload.interview_id,
             content=payload.message,
+            request_id=payload.request_id,
         )
     except InterviewResourceNotFoundError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="未找到面试记录") from error
@@ -327,6 +353,9 @@ async def generate_interview_questions(
     """Generate personalized questions using the user's analyzed resume and job."""
 
     try:
+        await enforce_rate_limit(
+            "question-generation", str(current_user.id), limit=10, window_seconds=3600
+        )
         return await QuestionService(session).generate_questions(
             resume_id=payload.resume_id,
             job_id=payload.job_id,

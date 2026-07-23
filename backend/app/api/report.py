@@ -14,7 +14,6 @@ from app.schemas.evaluation import EvaluationReportResponse
 from app.services.evaluation_service import EvaluationResourceNotFoundError, EvaluationService
 from app.services.report_pdf_service import generate_report_pdf
 
-
 router = APIRouter(prefix="/api/report", tags=["report"])
 
 

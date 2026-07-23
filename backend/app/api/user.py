@@ -1,7 +1,7 @@
 """Authenticated user profile routes."""
 
-from pathlib import Path
 import time
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
@@ -10,12 +10,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_current_user
 from app.config import settings
-from app.core.security import hash_password, verify_password
+from app.core.security import create_access_token, hash_password, verify_password
 from app.database.session import get_db_session
 from app.models.login_record import LoginRecord
 from app.models.user import User
-from app.schemas.user import CAREER_STATUSES, LoginRecordResponse, PasswordChangeRequest, UserResponse
-
+from app.schemas.user import (
+    CAREER_STATUSES,
+    AccountDeleteRequest,
+    LoginRecordResponse,
+    PasswordChangeRequest,
+    TokenResponse,
+    UserResponse,
+)
+from app.services.user_data_service import UserDataService
 
 router = APIRouter(prefix="/api/user", tags=["user"])
 
@@ -38,6 +45,9 @@ async def update_profile(
     avatar: Annotated[UploadFile | None, File()] = None,
 ) -> UserResponse:
     """Update the display name, career status, and optional avatar."""
+
+    previous_avatar: Path | None = None
+    new_avatar: Path | None = None
 
     if display_name is not None:
         normalized_name = display_name.strip()
@@ -62,30 +72,42 @@ async def update_profile(
         if extension is None:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="头像仅支持 JPG、PNG 或 WEBP 格式")
 
-        content = await avatar.read()
-        if len(content) > 5 * 1024 * 1024:
+        content = await avatar.read(settings.max_avatar_upload_bytes + 1)
+        if len(content) > settings.max_avatar_upload_bytes:
             raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="头像大小不能超过 5 MB")
+        if not _has_valid_image_signature(content, avatar.content_type or ""):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="头像文件内容与格式不匹配")
 
         avatar_directory = Path(settings.storage_dir) / "avatars"
         avatar_directory.mkdir(parents=True, exist_ok=True)
         filename = f"{current_user.id}_{time.time_ns()}{extension}"
-        (avatar_directory / filename).write_bytes(content)
+        new_avatar = avatar_directory / filename
+        new_avatar.write_bytes(content)
+        previous_avatar = _safe_avatar_path(current_user.avatar_url)
         current_user.avatar_url = f"/storage/avatars/{filename}"
         current_user.avatar_data = content
         current_user.avatar_content_type = avatar.content_type
 
-    await session.commit()
+    try:
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        if new_avatar is not None:
+            new_avatar.unlink(missing_ok=True)
+        raise
     await session.refresh(current_user)
+    if avatar is not None and avatar.filename and previous_avatar is not None:
+        previous_avatar.unlink(missing_ok=True)
     return UserResponse.model_validate(current_user)
 
 
-@router.patch("/password")
+@router.patch("/password", response_model=TokenResponse)
 async def change_password(
     payload: PasswordChangeRequest,
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
-) -> dict[str, str]:
-    """Change the password after verifying the existing password."""
+) -> TokenResponse:
+    """Change the password and rotate the current device's access token."""
 
     if not verify_password(payload.current_password, current_user.password_hash):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="当前密码不正确")
@@ -93,8 +115,27 @@ async def change_password(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="新密码不能与当前密码相同")
 
     current_user.password_hash = hash_password(payload.new_password)
+    current_user.token_version += 1
     await session.commit()
-    return {"message": "密码修改成功"}
+    return TokenResponse(
+        access_token=create_access_token(
+            subject=str(current_user.id),
+            token_version=current_user.token_version,
+        )
+    )
+
+
+@router.delete("/account", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_own_account(
+    payload: AccountDeleteRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> None:
+    """Permanently erase the current user's account, data, and stored files."""
+
+    if not verify_password(payload.current_password, current_user.password_hash):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="当前密码不正确")
+    await UserDataService(session).delete_user(current_user)
 
 
 @router.get("/login-records", response_model=list[LoginRecordResponse])
@@ -111,3 +152,22 @@ async def list_login_records(
         .limit(5)
     )
     return [LoginRecordResponse.model_validate(record) for record in result]
+
+
+def _safe_avatar_path(avatar_url: str | None) -> Path | None:
+    if not avatar_url:
+        return None
+    root = Path(settings.storage_dir).resolve()
+    candidate = (root / avatar_url.removeprefix("/storage/")).resolve()
+    return candidate if root in candidate.parents else None
+
+
+def _has_valid_image_signature(content: bytes, content_type: str) -> bool:
+    signatures = {
+        "image/jpeg": content.startswith(b"\xff\xd8\xff"),
+        "image/png": content.startswith(b"\x89PNG\r\n\x1a\n"),
+        "image/webp": len(content) >= 12
+        and content.startswith(b"RIFF")
+        and content[8:12] == b"WEBP",
+    }
+    return signatures.get(content_type, False)

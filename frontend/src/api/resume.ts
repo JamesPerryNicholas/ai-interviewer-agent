@@ -31,3 +31,15 @@ export async function analyzeResume(resumeId: number): Promise<ResumeAnalysis> {
   });
   return response.data;
 }
+
+export async function downloadResume(resumeId: number, filename: string): Promise<void> {
+  const response = await request.get<Blob>(`/api/resume/${resumeId}/download`, {
+    responseType: "blob",
+  });
+  const url = URL.createObjectURL(response.data);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}

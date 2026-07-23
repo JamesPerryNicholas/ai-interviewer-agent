@@ -1,5 +1,5 @@
 import request from "./request";
-import type { AuthUser, LoginRecord } from "../types";
+import type { AuthUser, LoginRecord, LoginResponse } from "../types";
 
 export async function updateProfile(displayName: string, careerStatus: string, avatar?: File): Promise<AuthUser> {
   const formData = new FormData();
@@ -10,11 +10,12 @@ export async function updateProfile(displayName: string, careerStatus: string, a
   return response.data;
 }
 
-export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
-  await request.patch("/api/user/password", {
+export async function changePassword(currentPassword: string, newPassword: string): Promise<LoginResponse> {
+  const response = await request.patch<LoginResponse>("/api/user/password", {
     current_password: currentPassword,
     new_password: newPassword,
   });
+  return response.data;
 }
 
 export async function getLoginRecords(): Promise<LoginRecord[]> {

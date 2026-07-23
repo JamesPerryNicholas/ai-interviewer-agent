@@ -9,6 +9,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.core.distributed_lock import acquire_lock, release_lock
 from app.llm.deepseek import DeepSeekClient
 from app.models.answer import Answer
 from app.models.evaluation_report import EvaluationReport
@@ -24,7 +25,6 @@ from app.schemas.evaluation import (
     EvaluationReportResponse,
 )
 from app.services.llm_usage_service import add_llm_usage
-
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +49,22 @@ class EvaluationService:
         self.deepseek_client = deepseek_client or DeepSeekClient()
 
     async def evaluate_interview(
+        self, *, user_id: int, interview_id: int, allow_partial: bool = False
+    ) -> EvaluationReportResponse:
+        """Serialize report generation so one interview incurs one LLM call."""
+
+        lock_key = f"interview-evaluation:{interview_id}"
+        client, token = await acquire_lock(lock_key)
+        try:
+            return await self._evaluate_interview_locked(
+                user_id=user_id,
+                interview_id=interview_id,
+                allow_partial=allow_partial,
+            )
+        finally:
+            await release_lock(client, lock_key, token)
+
+    async def _evaluate_interview_locked(
         self, *, user_id: int, interview_id: int, allow_partial: bool = False
     ) -> EvaluationReportResponse:
         """Evaluate an owned interview, save answer audit rows, and close it."""

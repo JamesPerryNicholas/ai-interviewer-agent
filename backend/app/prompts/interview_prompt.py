@@ -4,7 +4,6 @@ import json
 from collections.abc import Sequence
 from typing import Any
 
-
 INTERVIEW_QUESTION_SYSTEM_PROMPT = """
 你是一名资深中文技术面试官，负责根据候选人简历画像、求职状态和岗位JD设计个性化面试题。
 
@@ -88,24 +87,33 @@ def build_simulation_question_messages(
     # longer prompt above, while every simulation start must be responsive.
     simulation_system_prompt = (
         "你是一名严谨、友好的中文技术面试官。根据候选人简历能力画像、求职状态和岗位 JD，"
-        "生成一套正式面试问题，而不是考试题。只输出合法 JSON 数组，必须恰好包含 8 个对象，"
+        "生成一套正式面试问题，而不是考试题。只输出合法 JSON 对象，格式必须是"
+        '{"questions":[...] }，questions 必须恰好包含 8 个对象。'
         "每个对象只能有 question、category、difficulty 三个字段。question 必须是自然中文面试问句，"
         "技术名词保留英文；category 只能是 technical、project、behavioral、system_design、role_fit；"
         "difficulty 只能是 easy、medium、hard。问题必须结合候选人真实经历，不能编造简历事实，"
-        "不能使用‘下一题’、‘做题’、‘标准答案’等考试表达。"
+        "每个 question 限制在 80 个中文字符以内，不能使用‘下一题’、‘做题’、‘标准答案’等考试表达。"
     )
-    previous = [str(item).strip()[:160] for item in list(excluded_questions)[-32:]]
+    profile = {
+        "skills": list(resume_analysis.get("skills") or [])[:12],
+        "projects": list(resume_analysis.get("projects") or [])[:4],
+        "experience": str(resume_analysis.get("experience") or "")[:500],
+        "level": str(resume_analysis.get("level") or ""),
+    }
+    # Recent questions provide enough anti-repetition context without sending
+    # an ever-growing transcript on every new interview.
+    previous = [str(item).strip()[:90] for item in list(excluded_questions)[-48:]]
     user_prompt = (
         f"本次生成批次：{generation_nonce}\n"
         f"求职状态：{career_status}\n"
         f"公司：{company}\n"
         f"岗位：{position}\n"
-        f"简历能力画像：{json.dumps(resume_analysis, ensure_ascii=False)}\n"
-        f"岗位 JD：{job_description[:6000]}\n"
+        f"简历能力画像：{json.dumps(profile, ensure_ascii=False)}\n"
+        f"岗位 JD：{job_description[:2500]}\n"
         "以下是历史面试已经使用的问题，仅用于排重；本次不能重复或仅替换几个词：\n"
         f"{json.dumps(previous, ensure_ascii=False)}\n"
         "请优先从不同项目切入点、技术取舍、业务场景和追问角度生成 8 道全新问题，"
-        "只返回 JSON 数组，不要 Markdown 或解释。"
+        "只返回 JSON 对象，不要 Markdown 或解释。"
     )
     return [
         {"role": "system", "content": simulation_system_prompt},

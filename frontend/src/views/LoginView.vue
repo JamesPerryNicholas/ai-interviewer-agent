@@ -52,7 +52,19 @@ async function handleLogin() {
   try {
     await userStore.login(form.account, form.password);
     ElMessage.success(t("login.welcome"));
-    const redirect = typeof route.query.redirect === "string" ? route.query.redirect : "/";
+    const requestedRedirect = typeof route.query.redirect === "string" ? route.query.redirect : "";
+    // A numeric report/interview route may belong to the previous account.
+    // Only preserve account-independent destinations after a fresh login.
+    const safeRedirects = new Set([
+      "/dashboard",
+      "/resume",
+      "/jobs",
+      "/profile",
+      "/settings",
+      "/interview/history",
+      "/interview/new",
+    ]);
+    const redirect = safeRedirects.has(requestedRedirect) ? requestedRedirect : "/dashboard";
     await router.push(redirect);
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : "登录失败，请稍后重试");

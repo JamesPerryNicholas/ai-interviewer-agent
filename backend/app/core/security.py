@@ -1,6 +1,7 @@
 """Password hashing and JWT access-token helpers."""
 
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 import bcrypt
 from jose import jwt
@@ -31,11 +32,22 @@ def create_access_token(
     subject: str,
     expires_delta: timedelta | None = None,
     token_type: str = "user",
+    token_version: int = 0,
 ) -> str:
     """Create a signed JWT with an explicit user or admin token type."""
 
     expire = datetime.now(timezone.utc) + (
         expires_delta or timedelta(minutes=settings.jwt_expire_minutes)
     )
-    payload = {"sub": subject, "exp": expire, "token_type": token_type}
+    issued_at = datetime.now(timezone.utc)
+    payload = {
+        "sub": subject,
+        "exp": expire,
+        "iat": issued_at,
+        "jti": uuid4().hex,
+        "iss": settings.jwt_issuer,
+        "aud": settings.jwt_audience,
+        "token_type": token_type,
+        "ver": token_version,
+    }
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)

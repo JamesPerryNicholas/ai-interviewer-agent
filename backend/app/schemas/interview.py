@@ -11,6 +11,7 @@ class InterviewStartRequest(BaseModel):
 
     resume_id: int = Field(gt=0)
     job_id: int = Field(gt=0)
+    request_id: str = Field(min_length=16, max_length=64)
 
 
 class InterviewChatRequest(BaseModel):
@@ -18,6 +19,7 @@ class InterviewChatRequest(BaseModel):
 
     interview_id: int = Field(gt=0)
     message: str = Field(min_length=1, max_length=10_000)
+    request_id: str = Field(min_length=16, max_length=64)
 
 
 class InterviewResponse(BaseModel):

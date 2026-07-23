@@ -1,11 +1,12 @@
 import axios from "axios";
+import { API_BASE_URL } from "./base";
 
 export const TOKEN_KEY = "ai-interviewer-token";
 export const USER_KEY = "ai-interviewer-user";
 
 /** Shared Axios client for all frontend-to-backend requests. */
 const request = axios.create({
-  baseURL: "http://localhost:8000",
+  baseURL: API_BASE_URL,
   timeout: 10_000,
   headers: {
     "Content-Type": "application/json",
@@ -63,6 +64,10 @@ request.interceptors.response.use(
     if (error.response?.status === 401) {
       localStorage.removeItem(TOKEN_KEY);
       localStorage.removeItem(USER_KEY);
+      if (window.location.pathname !== "/login") {
+        const redirect = encodeURIComponent(window.location.pathname + window.location.search);
+        window.location.replace(`/login?redirect=${redirect}`);
+      }
     }
 
     return Promise.reject(error);
