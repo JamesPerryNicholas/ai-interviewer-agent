@@ -716,7 +716,10 @@ docker compose up -d --no-deps frontend
 Set-Location "D:\项目\AI workflow\ai-interviewer-agent"
 Copy-Item .env.example .env
 # 编辑 .env，填写数据库密码、Redis 密码、JWT 密钥和 DeepSeek API Key
-docker compose up -d --build
+服务器里不能让前后端同时构建，否则卡死
+docker compose build backend
+docker compose build frontend
+docker compose up -d
 docker compose ps
 ```
 
