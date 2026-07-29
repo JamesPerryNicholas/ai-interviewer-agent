@@ -58,7 +58,7 @@ async function saveJob() {
 async function removeJob(job: JobPosition) {
   try {
     await ElMessageBox.confirm(
-      `确定删除“${job.position}”岗位吗？删除后无法恢复。`,
+        `确定删除“${job.position}”岗位信息吗？删除后，关联的面试记录和面试报告将彻底消失，且无法恢复。`,
       "删除岗位",
       {
         confirmButtonText: "删除",

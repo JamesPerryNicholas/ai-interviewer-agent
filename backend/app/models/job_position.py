@@ -39,4 +39,7 @@ class JobPosition(Base):
         back_populates="job_position",
         cascade="all, delete-orphan",
     )
-    interviews: Mapped[list["Interview"]] = relationship(back_populates="job_position")
+    interviews: Mapped[list["Interview"]] = relationship(
+        back_populates="job_position",
+        passive_deletes=True,
+    )

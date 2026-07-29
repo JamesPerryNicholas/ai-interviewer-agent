@@ -3,10 +3,12 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, select
+from redis.asyncio import from_url
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_current_user
+from app.config import settings
 from app.database.session import get_db_session
 from app.models.interview import Interview
 from app.models.job_position import JobPosition
@@ -57,7 +59,7 @@ async def delete_job_position(
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> None:
-    """Delete one owned job that has not been used for an interview."""
+    """Delete an owned job and its dependent interview data."""
 
     job_position = await session.scalar(
         select(JobPosition).where(
@@ -68,14 +70,21 @@ async def delete_job_position(
     if job_position is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="岗位不存在")
 
-    interview_count = await session.scalar(
-        select(func.count(Interview.id)).where(Interview.job_id == job_id)
-    )
-    if interview_count:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="该岗位已经关联面试记录，不能删除",
-        )
+    # Collect cache keys before the database cascade removes the interviews.
+    interview_ids = (
+        await session.scalars(select(Interview.id).where(Interview.job_id == job_id))
+    ).all()
 
     await session.delete(job_position)
     await session.commit()
+
+    # Redis is only a resumable-session cache.  A cache cleanup failure must
+    # not turn a successful PostgreSQL deletion into an API error.
+    if interview_ids:
+        try:
+            async with from_url(settings.redis_url, decode_responses=True) as client:
+                await client.delete(
+                    *(f"interview:{interview_id}:context" for interview_id in interview_ids)
+                )
+        except Exception:
+            pass
