@@ -19,66 +19,66 @@ from app.schemas.user import TokenResponse, UserLogin, UserRegister, UserRespons
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
-@router.post(
-    "/register",
-    response_model=UserResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-async def register_user(
-    payload: UserRegister,
-    session: Annotated[AsyncSession, Depends(get_db_session)],
-    request: Request,
-) -> UserResponse:
-    """Register a user after hashing the password with bcrypt."""
-
-    normalized_email = str(payload.email).lower()
-    normalized_username = payload.username.strip()
-    await enforce_rate_limit(
-        "auth-register", client_ip(request), limit=5, window_seconds=3600
-    )
-
-    if not normalized_username:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="账号不能为空",
-        )
-    if normalized_username.casefold() == settings.admin_username.casefold():
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="该账号名为系统管理员保留账号",
-        )
-
-    existing_user = await session.scalar(
-        select(User).where(
-            or_(User.email == normalized_email, User.username == normalized_username)
-        )
-    )
-    if existing_user is not None:
-        detail = (
-            "邮箱已注册"
-            if existing_user.email == normalized_email
-            else "账号已注册"
-        )
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
-
-    user = User(
-        username=normalized_username,
-        email=normalized_email,
-        password_hash=hash_password(payload.password),
-    )
-    session.add(user)
-
-    try:
-        await session.commit()
-    except IntegrityError as error:
-        await session.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="邮箱或账号已注册",
-        ) from error
-
-    await session.refresh(user)
-    return UserResponse.model_validate(user)
+# @router.post(
+#     "/register",
+#     response_model=UserResponse,
+#     status_code=status.HTTP_201_CREATED,
+# )
+# async def register_user(
+#     payload: UserRegister,
+#     session: Annotated[AsyncSession, Depends(get_db_session)],
+#     request: Request,
+# ) -> UserResponse:
+#     """Register a user after hashing the password with bcrypt."""
+#
+#     normalized_email = str(payload.email).lower()
+#     normalized_username = payload.username.strip()
+#     await enforce_rate_limit(
+#         "auth-register", client_ip(request), limit=5, window_seconds=3600
+#     )
+#
+#     if not normalized_username:
+#         raise HTTPException(
+#             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+#             detail="账号不能为空",
+#         )
+#     if normalized_username.casefold() == settings.admin_username.casefold():
+#         raise HTTPException(
+#             status_code=status.HTTP_409_CONFLICT,
+#             detail="该账号名为系统管理员保留账号",
+#         )
+#
+#     existing_user = await session.scalar(
+#         select(User).where(
+#             or_(User.email == normalized_email, User.username == normalized_username)
+#         )
+#     )
+#     if existing_user is not None:
+#         detail = (
+#             "邮箱已注册"
+#             if existing_user.email == normalized_email
+#             else "账号已注册"
+#         )
+#         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
+#
+#     user = User(
+#         username=normalized_username,
+#         email=normalized_email,
+#         password_hash=hash_password(payload.password),
+#     )
+#     session.add(user)
+#
+#     try:
+#         await session.commit()
+#     except IntegrityError as error:
+#         await session.rollback()
+#         raise HTTPException(
+#             status_code=status.HTTP_409_CONFLICT,
+#             detail="邮箱或账号已注册",
+#         ) from error
+#
+#     await session.refresh(user)
+#     return UserResponse.model_validate(user)
 
 
 @router.post("/login", response_model=TokenResponse)
