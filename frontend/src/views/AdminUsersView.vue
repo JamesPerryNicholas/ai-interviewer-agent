@@ -34,12 +34,35 @@ function randomPassword() {
   form.password = Array.from({ length: 12 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
 }
 
+function copyTextFallback(value: string) {
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.top = "-9999px";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  textarea.setSelectionRange(0, textarea.value.length);
+  const copied = document.execCommand("copy");
+  textarea.remove();
+  if (!copied) throw new Error("copy command failed");
+}
+
 async function copyText(value: string, label: string) {
   try {
-    await navigator.clipboard.writeText(value);
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(value);
+      } catch {
+        copyTextFallback(value);
+      }
+    } else {
+      copyTextFallback(value);
+    }
     ElMessage.success(`${label}已复制`);
   } catch {
-    ElMessage.error("复制失败，请手动选择文本复制");
+    ElMessage.error("复制失败，请检查浏览器剪贴板权限");
   }
 }
 
