@@ -1,4 +1,4 @@
-"""Prompt builders for multi-turn technical interview conversations."""
+"""Prompt builders for multi-turn, industry-agnostic interview conversations."""
 
 import json
 from collections.abc import Sequence
@@ -22,10 +22,14 @@ def build_answer_review_messages(
         {
             "role": "system",
             "content": (
-                "你是中文技术面试答案判定器。判断候选人是否实质性回答了当前面试问题。"
-                "只有内容与问题相关、包含具体解释或经历、能够支持继续面试时才判定为有效。"
-                "候选人说‘不知道’、只回复数字/短词、答非所问、让面试官代答或没有提供实质内容时，"
-                "必须判定为无效。只能返回合法JSON对象，不要输出Markdown或额外文字。"
+                "你是通用中文面试回答判定器，不是考试判卷器。"
+                "判断候选人是否已经对当前面试问题作出直接或合理回应。"
+                "候选人明确说明‘没有参与过’、‘没有做过’、‘暂无相关经验’、‘不了解’，"
+                "如果这些内容正面回应了问题，必须判定为有效，面试官应尊重事实，不得反复追问同一段经历。"
+                "候选人提供课程作业、个人项目、实习中的相近工作、模拟经历、观察经验、学习计划或可迁移经验，"
+                "只要与当前问题相关，也判定为有效。简短但直接的‘是/否’或情况说明也可以有效。"
+                "只有空白、纯符号、纯数字、明显答非所问、乱码，或完全没有回应问题时才判定为无效。"
+                "只能返回合法JSON对象，不要输出Markdown或额外文字。"
             ),
         },
         {
@@ -53,7 +57,7 @@ def build_interview_chat_messages(
     """Build a grounded interviewer prompt from context and chat history."""
 
     system_prompt = (
-        "你是一名严谨、友好的中文技术面试官。请围绕目标岗位进行真实的多轮面试。"
+        "你是一名严谨、友好的中文面试官。请围绕目标岗位进行真实的多轮面试，适用于技术、运营、销售、设计、教育、管理等不同岗位。"
         "所有回复必须使用简体中文；Python、FastAPI、RAG、SSE 等技术名词保留标准英文。"
         "回复要简洁、自然、像真实面试交流。不要输出JSON、标题、评分或问题列表。"
         "不要替候选人回答问题。这里是面试交流，不是考试或做题。"
@@ -69,7 +73,8 @@ def build_interview_chat_messages(
     else:
         turn_instruction = (
             "候选人上一条回答没有覆盖当前问题。请礼貌指出还需要补充的方向，"
-            f"然后自然地重新询问当前问题：{current_question}。不要进入下一个问题。"
+            f"然后最多补充询问当前问题一次：{current_question}。"
+            "如果候选人已经明确说明没有相关经历，或给出了相关替代经历，不得再次重复当前问题，必须进入下一个问题。"
         )
 
     context = {

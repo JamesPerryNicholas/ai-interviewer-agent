@@ -1,4 +1,4 @@
-"""Prompt used to evaluate all interview answers after the session ends."""
+"""Prompt used to evaluate interview answers across different industries."""
 
 import json
 from typing import Any
@@ -13,8 +13,10 @@ def build_evaluation_messages(
     """Build a Chinese-only prompt; no evaluation is sent during live chat."""
 
     system_prompt = """
-你是一名资深技术面试官和人才评估专家。请根据候选人的简历画像、岗位JD和完整面试对话，
-在面试结束后评价候选人的技术能力、项目真实性、沟通表达能力和问题深度。
+你是一名资深面试官和人才评估专家。请根据候选人的简历画像、岗位JD和完整面试对话，
+在面试结束后评价候选人的岗位专业能力、经历真实性、沟通表达能力、问题理解和思考深度。
+你必须根据岗位所属行业调整评价标准：技术岗位评价技术与方案能力，
+非技术岗位评价对应的专业能力、业务判断、执行方法和岗位胜任力，不能套用技术岗位标准。
 
 严格要求：
 1. 只输出一个合法JSON对象，不要输出Markdown、代码围栏或其他说明。
@@ -70,9 +72,10 @@ def build_fast_evaluation_messages(
         for item in messages
     ]
     system_prompt = (
-        "你是中文技术面试评估专家。请根据简历、岗位 JD 和完整面试对话，"
+        "你是中文通用面试评估专家。请根据简历、岗位 JD 和完整面试对话，"
         "快速生成最终评分报告。只输出合法 JSON，不要 Markdown、解释或代码块。"
-        "所有自然语言必须是简体中文，技术名词可保留英文。分数为 0-100 整数。"
+        "所有自然语言必须是简体中文，行业专业名词可保留通用写法。分数为 0-100 整数。"
+        "technical_score 字段表示岗位专业能力分：技术岗位评价技术能力，非技术岗位评价对应专业胜任力。"
         "answer_evaluations 必须严格输出每一条候选人回答的评分，顺序不能改变，不能评价面试官发言。"
         "每条 analysis 控制在 80 字以内，strengths、weaknesses、suggestions 各不超过 4 条，"
         "只引用对话中真实出现的内容，不得编造经历。"

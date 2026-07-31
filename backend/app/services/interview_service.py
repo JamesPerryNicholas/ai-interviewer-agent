@@ -738,6 +738,13 @@ class InterviewService:
     ) -> tuple[bool, str]:
         """Use a private AI rubric to decide whether the current question is answered."""
 
+        # A truthful statement that the candidate has not done something is
+        # still a direct answer to an experience-based interview question.
+        # Handle it locally so an LLM cannot repeatedly reject the same answer
+        # and trap the candidate in an endless follow-up loop.
+        if self._is_explicit_experience_gap(answer):
+            return True, "了解，你目前没有直接参与过这类工作。我们换一个角度继续了解你的相关经历"
+
         try:
             raw_content = await self.deepseek_client.chat_completion(
                 messages=build_answer_review_messages(
@@ -778,11 +785,38 @@ class InterviewService:
     def _fallback_answer_review(answer: str) -> tuple[bool, str]:
         """Keep the interview moving when the private reviewer is unavailable."""
 
+        if InterviewService._is_explicit_experience_gap(answer):
+            return True, "了解，你目前没有直接参与过这类工作。我们换一个角度继续了解你的相关经历"
+
         compact = "".join(answer.split())
         is_substantive = len(compact) >= 16 and not compact.isdigit()
         if is_substantive:
             return True, "回答包含了具体思路，我们继续面试"
         return False, "回答内容还比较简略，请补充具体做法、原因或实际结果"
+
+    @staticmethod
+    def _is_explicit_experience_gap(answer: str) -> bool:
+        """Recognize honest lack-of-experience answers as valid responses."""
+
+        normalized = "".join(answer.casefold().split())
+        experience_gap_phrases = (
+            "没有参与过",
+            "未参与过",
+            "没参与过",
+            "没有做过",
+            "未做过",
+            "没做过",
+            "没有相关经验",
+            "暂无相关经验",
+            "没有这方面经验",
+            "没有接触过",
+            "未接触过",
+            "没接触过",
+            "没有经历过",
+            "未经历过",
+            "没经历过",
+        )
+        return any(phrase in normalized for phrase in experience_gap_phrases)
 
     @staticmethod
     def _parse_answer_review(raw_content: str) -> tuple[bool, str]:
