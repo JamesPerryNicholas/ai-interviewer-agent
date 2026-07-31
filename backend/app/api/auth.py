@@ -4,17 +4,15 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import or_, select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_current_user
-from app.config import settings
 from app.core.rate_limit import client_ip, enforce_rate_limit
-from app.core.security import create_access_token, hash_password, verify_password
+from app.core.security import create_access_token, verify_password
 from app.database.session import get_db_session
 from app.models.login_record import LoginRecord
 from app.models.user import User
-from app.schemas.user import TokenResponse, UserLogin, UserRegister, UserResponse
+from app.schemas.user import TokenResponse, UserLogin, UserResponse
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
